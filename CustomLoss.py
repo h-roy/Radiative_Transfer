@@ -6,55 +6,53 @@ class CustomLoss(torch.nn.Module):
     def __init__(self):
         super(CustomLoss, self).__init__()
 
-    def forward(self, network, interior_data, boundary_data_1, boundary_data_2):
+    def forward(self, pinn, interior_data, boundary_data_1, boundary_data_2, lambda_loss):
 
-
-      optimizer = optim.Adam(network.parameters(), lr=0.0001)
-
+      criterion = nn.MSELoss()
       #Interior Loss
-      interior_tensor = torch.from_numpy(interior_data).float()
-      int_output = network(interior_tensor, requires_grad=True)
-      grad_vec = np.zeros((interior_data.shape[0],2))
+      x = torch.from_numpy(interior_data).float()
+      xc = x.clone()
+      xc.requires_grad = True
+      upred = pinn(xc)
+      upred = upred.to(torch.float32)
 
-      interior_loss_1 = 0
-      interior_loss_2 = 0
+      pde_lhs_1 = 0
+      pde_lhs_2 = 0
 
       #First Term
-      interior_loss_1 += -int_output[:,0]
-      interior_loss_2 += -int_output[:,1]
+      pde_lhs_1 += -upred[:,0]
+      pde_lhs_2 += -upred[:,1]
 
       #Second Term
-      for j in range(int_output.shape[1]):
-        for i in range(int_output.shape[0]):
-          g = int_output[i,j]
-          g.backward(retain_graph=True)
-          gradient_input = interior_tensor.grad
-          grad_vec[i,j] = gradient_input[i,1]
-          optimizer.zero_grad()
-          x.grad.data = torch.full((interior_data.shape[0],3),0, requires_grad = True, dtype = torch.float32)
 
-      interior_loss_1 += interior_tensor[:,2].detach().numpy() * grad_vec[:,0]
-      interior_loss_2 += interior_tensor[:,2].detach().numpy() * grad_vec[:,1]
+      u_pred_grad_1 = torch.autograd.grad(upred[:,0].sum(),xc,create_graph=True, allow_unused=True)[0]
+      u_pred_grad_2 = torch.autograd.grad(upred[:,1].sum(),xc,create_graph=True, allow_unused=True)[0]
+      pde_lhs_1 += x[:,2] * u_pred_grad_1[:,1]
+      pde_lhs_2 += x[:,2] * u_pred_grad_2[:,1]
 
       #Third Term
-      scatter_integral_1 = 0
-      scatter_integral_2 = 0
 
-      interior_loss_1 += scatter_integral_1
-      interior_loss_2 += scatter_integral_2
-
-
-      #interior_loss =
+      #Interior Loss:
+      ic_target_1 = torch.zeros(pde_lhs_1.shape[0], dtype=torch.float32)
+      ic_target_2 = torch.zeros(pde_lhs_2.shape[0], dtype=torch.float32)
+      interior_loss_1 = criterion(pde_lhs_1, ic_target_1)
+      interior_loss_2 = criterion(pde_lhs_2, ic_target_2)
 
       #Boundary Loss
-      criterion = nn.MSELoss()
 
-      boundary_tensor_1 = torch.from_numpy(boundary_data_1).float()
-      boundary_output_1 = network(boundary_tensor_1, requires_grad=True)
-      target_1 = torch.full((boundary_output_1[0],2),0)
-      boundary_loss_1 = criterion(boundary_output_1, target)
-      optimizer.zero_grad()
-      boundary_tensor_2 = torch.from_numpy(boundary_data_2).float()
-      boundary_output_2 = network(boundary_tensor_2, requires_grad=True)
-      target_2 = torch.full((boundary_output_2[0],2),1)
-      boundary_loss_2 = criterion(boundary_output_2, target)
+
+      x_bc_1 = torch.from_numpy(boundary_data_1).float()
+      upred_bc_1 = pinn(x_bc_1)
+      upred_bc_1 = upred_bc_1.to(torch.float32)
+      bc_target_1 = torch.full((upred_bc_1.shape[0],2),0, dtype=torch.float32)
+      boundary_loss_1 = criterion(upred_bc_1, bc_target_1)
+
+      x_bc_2 = torch.from_numpy(boundary_data_2).float()
+      upred_bc_2 = pinn(x_bc_2)
+      upred_bc_2 = upred_bc_2.to(torch.float32)
+      bc_target_2 = torch.full((upred_bc_2.shape[0],2),1, dtype=torch.float32)
+      boundary_loss_2 = criterion(upred_bc_2, bc_target_2)
+
+      loss = interior_loss_1 + interior_loss_2 + lambda_loss * (boundary_loss_1 + boundary_loss_2)
+
+      return loss
